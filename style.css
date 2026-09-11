@@ -1,0 +1,125 @@
+:root {
+  --bg: #1e1f24;
+  --panel: #26282f;
+  --panel2: #2f323b;
+  --border: #3c404b;
+  --text: #e6e6e6;
+  --muted: #9aa0ad;
+  --accent: #3b82f6;
+  --accent2: #2563eb;
+  --danger: #ef4444;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body {
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  user-select: none;
+}
+h2 { font-size: 12px; margin: 0 0 6px; color: var(--muted); letter-spacing: .05em; text-transform: uppercase; }
+button, select, input, textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+button { cursor: pointer; white-space: nowrap; }
+button:hover { background: #3a3e48; }
+button:active { background: #444957; }
+button:disabled { opacity: .4; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent2); color: #fff; }
+button.primary:hover { background: var(--accent2); }
+button.danger { color: #fff; background: var(--danger); border-color: #b91c1c; }
+button.active { background: var(--accent); border-color: var(--accent2); color: #fff; }
+input[type=number] { width: 68px; padding: 3px 4px; }
+input[type=color] { width: 32px; height: 26px; padding: 1px; }
+input[type=range] { width: 100%; padding: 0; background: transparent; border: none; }
+input[type=checkbox] { margin: 0 4px 0 0; }
+textarea { width: 100%; min-height: 60px; resize: vertical; }
+label { display: inline-flex; align-items: center; gap: 4px; }
+.hint { color: var(--muted); }
+.sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
+
+/* ---------- ツールバー ---------- */
+#toolbar {
+  display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center;
+  padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--border);
+}
+#toolbar .group { display: flex; align-items: center; gap: 4px; }
+#toolbar .group.right { margin-left: auto; }
+#zoomLabel { min-width: 48px; text-align: center; color: var(--muted); }
+
+/* ---------- メイン ---------- */
+main { flex: 1; display: flex; min-height: 0; }
+#stage {
+  flex: 1; position: relative; overflow: hidden; background: #15161a;
+  background-image: radial-gradient(#25262c 1px, transparent 1px); background-size: 20px 20px;
+}
+#stage canvas { position: absolute; left: 0; top: 0; }
+#overlay { touch-action: none; }
+#dropHint {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none;
+}
+#dropHint > div {
+  background: rgba(30,31,36,.92); color: var(--text); border: 1px dashed var(--border); border-radius: 8px;
+  padding: 18px 28px; text-align: center; font-size: 18px;
+}
+#dropHint .sub { font-size: 13px; color: var(--muted); margin-top: 6px; }
+#stage.dragover { outline: 3px dashed var(--accent); outline-offset: -6px; }
+#cropBar {
+  position: absolute; left: 50%; top: 12px; transform: translateX(-50%);
+  display: flex; gap: 8px; align-items: center;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.4);
+}
+
+/* ---------- サイドパネル ---------- */
+#side {
+  width: 300px; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--border);
+  min-height: 0;
+}
+#side section { padding: 10px; }
+#layersPanel { flex: 0 0 auto; max-height: 45%; display: flex; flex-direction: column; border-bottom: 1px solid var(--border); }
+#layersPanel .row { display: flex; gap: 4px; margin-bottom: 6px; }
+#layerList { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 60px; }
+#layerList li {
+  display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 4px; cursor: pointer;
+  border: 1px solid transparent;
+}
+#layerList li:hover { background: var(--panel2); }
+#layerList li.sel { background: #2b3a55; border-color: var(--accent); }
+#layerList li.dragover-top { border-top: 2px solid var(--accent); }
+#layerList li.dragover-bottom { border-bottom: 2px solid var(--accent); }
+#layerList li.hidden .name { opacity: .45; }
+#layerList .thumb { width: 36px; height: 36px; background: #666; border-radius: 3px; flex: none; }
+#layerList .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#layerList .name input { width: 100%; padding: 2px 4px; }
+#layerList .icon { background: none; border: none; padding: 2px 4px; font-size: 14px; opacity: .8; }
+#layerList .icon.off { opacity: .3; }
+
+#propsPanel { flex: 1; overflow-y: auto; }
+#props .sec { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+#props .sec h3 { font-size: 12px; margin: 0 0 6px; color: var(--muted); }
+#props .row { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; flex-wrap: wrap; }
+#props .row > .lbl { width: 64px; flex: none; color: var(--muted); }
+#props .row input[type=text], #props .row select { flex: 1; min-width: 0; }
+#props .row .val { width: 40px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+#props .row input[type=range] { flex: 1; }
+#props .btns { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* ---------- モーダル ---------- */
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; z-index: 10; }
+.dialog { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; width: 380px; max-width: 95vw; box-shadow: 0 8px 32px rgba(0,0,0,.5); }
+.dialog h2 { font-size: 15px; text-transform: none; color: var(--text); margin-bottom: 12px; }
+.dialog .field { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.dialog .field > input[type=text], .dialog .field > select { flex: 1; }
+.dialog .field.check { display: flex; }
+.dialog .row { display: flex; gap: 8px; margin-top: 14px; }
+.dialog .row.end { justify-content: flex-end; }

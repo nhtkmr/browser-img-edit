@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>レイヤー画像エディタ</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="toolbar">
+  <div class="group">
+    <button type="button" id="btnOpen" class="primary">画像を開く</button>
+    <input type="file" id="fileInput" accept="image/*" multiple hidden>
+    <span class="sep"></span>
+    <button type="button" id="btnAddText">テキスト</button>
+    <button type="button" id="btnAddRect">矩形</button>
+    <button type="button" id="btnAddEllipse">楕円</button>
+    <button type="button" id="btnAddLine">線</button>
+  </div>
+  <div class="group">
+    <button type="button" id="btnUndo" title="元に戻す (Ctrl+Z)">↶</button>
+    <button type="button" id="btnRedo" title="やり直す (Ctrl+Y)">↷</button>
+  </div>
+  <div class="group">
+    <label>キャンバス
+      <input type="number" id="canvasW" min="1" max="16384" title="幅"> ×
+      <input type="number" id="canvasH" min="1" max="16384" title="高さ">
+    </label>
+    <select id="canvasBgMode" title="背景">
+      <option value="transparent">背景: 透明</option>
+      <option value="color">背景: 色</option>
+    </select>
+    <input type="color" id="canvasBgColor" value="#ffffff" title="背景色">
+    <button type="button" id="btnFitSelected" title="キャンバスを選択レイヤーの範囲に合わせる">選択に合わせる</button>
+    <button type="button" id="btnFitAll" title="キャンバスを全レイヤーを含む範囲に合わせる">全体に合わせる</button>
+    <button type="button" id="btnCanvasCrop" title="矩形をドラッグしてキャンバスを切り抜く">キャンバス切り抜き</button>
+  </div>
+  <div class="group">
+    <button type="button" id="zoomOut" title="縮小">−</button>
+    <span id="zoomLabel">100%</span>
+    <button type="button" id="zoomIn" title="拡大">＋</button>
+    <button type="button" id="zoomFit" title="キャンバス全体を表示">全体表示</button>
+    <button type="button" id="zoom100" title="等倍表示">100%</button>
+  </div>
+  <div class="group right">
+    <button type="button" id="btnExport" class="primary">書き出し</button>
+  </div>
+</header>
+
+<main>
+  <div id="stage">
+    <canvas id="view"></canvas>
+    <canvas id="overlay"></canvas>
+    <div id="dropHint">
+      <div>ここに画像をドロップ<div class="sub">または「画像を開く」／ Ctrl+V で貼り付け</div></div>
+    </div>
+    <div id="cropBar" hidden>
+      <span id="cropMsg"></span>
+      <button type="button" id="cropApply" class="primary">適用</button>
+      <button type="button" id="cropCancel">キャンセル</button>
+    </div>
+  </div>
+
+  <aside id="side">
+    <section id="layersPanel">
+      <h2>レイヤー</h2>
+      <div class="row">
+        <button type="button" id="layerUp" title="前面へ">▲</button>
+        <button type="button" id="layerDown" title="背面へ">▼</button>
+        <button type="button" id="layerDup" title="複製 (Ctrl+D)">複製</button>
+        <button type="button" id="layerDel" title="削除 (Delete)">削除</button>
+      </div>
+      <ul id="layerList"></ul>
+    </section>
+    <section id="propsPanel">
+      <h2>プロパティ</h2>
+      <div id="props"><p class="hint">レイヤーを選択してください</p></div>
+    </section>
+  </aside>
+</main>
+
+<div id="exportModal" class="modal" hidden>
+  <div class="dialog">
+    <h2>書き出し</h2>
+    <label class="field">ファイル名 <input type="text" id="expName" value="image"></label>
+    <label class="field">形式
+      <select id="expFormat">
+        <option value="image/png">PNG</option>
+        <option value="image/jpeg">JPEG</option>
+        <option value="image/webp">WebP</option>
+      </select>
+    </label>
+    <label class="field" id="expQualityRow">品質
+      <input type="range" id="expQuality" min="1" max="100" value="92">
+      <span id="expQualityVal">92</span>
+    </label>
+    <label class="field">サイズ
+      <select id="expSizeMode">
+        <option value="scale">倍率 (%)</option>
+        <option value="width">幅 (px)</option>
+        <option value="height">高さ (px)</option>
+      </select>
+      <input type="number" id="expSize" value="100" min="1">
+    </label>
+    <div id="expInfo" class="hint"></div>
+    <label class="field check"><input type="checkbox" id="expWhiteBg" checked> 透明部分を白で塗る（JPEGなど透明非対応のとき）</label>
+    <div class="row end">
+      <button type="button" id="expCancel">キャンセル</button>
+      <button type="button" id="expDo" class="primary">ダウンロード</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

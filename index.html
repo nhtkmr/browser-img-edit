@@ -38,6 +38,20 @@
     <button type="button" id="btnFitSelected" title="キャンバスを選択レイヤーの範囲に合わせる">選択に合わせる</button>
     <button type="button" id="btnFitAll" title="キャンバスを全レイヤーを含む範囲に合わせる">全体に合わせる</button>
     <button type="button" id="btnCanvasCrop" title="矩形をドラッグしてキャンバスを切り抜く">キャンバス切り抜き</button>
+    <span class="sep"></span>
+    <button type="button" id="canvasRotL" title="キャンバス全体を左に90°回転">↺90°</button>
+    <button type="button" id="canvasRotR" title="キャンバス全体を右に90°回転">↻90°</button>
+    <button type="button" id="canvasRot180" title="キャンバス全体を180°回転">180°</button>
+    <button type="button" id="canvasFlipX" title="キャンバス全体を左右反転">⇋</button>
+    <button type="button" id="canvasFlipY" title="キャンバス全体を上下反転">⇅</button>
+  </div>
+  <div class="group">
+    <button type="button" id="btnGrid" title="グリッド表示 (Ctrl+')">グリッド</button>
+    <select id="gridSize" title="グリッド間隔">
+      <option value="8">8px</option><option value="16">16px</option><option value="32">32px</option>
+      <option value="50">50px</option><option value="64">64px</option><option value="100">100px</option><option value="128">128px</option>
+    </select>
+    <label title="移動時にグリッド線とキャンバスの端・中心に吸着する（Alt で一時無効）"><input type="checkbox" id="snapOn">吸着</label>
   </div>
   <div class="group">
     <button type="button" id="zoomOut" title="縮小">−</button>
@@ -93,6 +107,8 @@
         <button type="button" id="layerUp" title="前面へ">▲</button>
         <button type="button" id="layerDown" title="背面へ">▼</button>
         <button type="button" id="layerDup" title="複製 (Ctrl+D)">複製</button>
+        <button type="button" id="layerMerge" title="下のレイヤーと結合 (Ctrl+E)">結合↓</button>
+        <button type="button" id="layerMergeVisible" title="表示中のレイヤーをすべて統合 (Ctrl+Shift+E)">統合</button>
         <button type="button" id="layerDel" title="削除 (Delete)">削除</button>
       </div>
       <ul id="layerList"></ul>

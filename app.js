@@ -29,6 +29,8 @@ const state = {
   selectedId: null,
 };
 const view = { zoom: 1, panX: 0, panY: 0, dpr: window.devicePixelRatio || 1 };
+const grid = { on: false, size: 32, snap: true };   // グリッド表示と吸着（設定は localStorage に保存）
+try { Object.assign(grid, JSON.parse(localStorage.getItem('browser-img-edit.grid') || '{}')); } catch (e) { /* ignore */ }
 const images = new Map();   // imgId -> HTMLImageElement | HTMLCanvasElement（履歴のJSONには含めない）
 const imageBlobs = new Map(); // imgId -> Blob（元ファイル。プロジェクト保存で再エンコードせずに使う）
 let nextId = 1;
@@ -381,6 +383,23 @@ function renderNow() {
   vctx.imageSmoothingEnabled = zoom < 4;
   vctx.imageSmoothingQuality = 'high';
   vctx.drawImage(doc, panX, panY, sw, sh);
+  if (grid.on && grid.size * zoom >= 5) {
+    vctx.save();
+    vctx.beginPath(); vctx.rect(panX, panY, sw, sh); vctx.clip();
+    vctx.lineWidth = 1;
+    const step = grid.size * zoom;
+    for (let i = 1; i * grid.size < cw; i++) {
+      const x = Math.round(panX + i * step) + .5;
+      vctx.strokeStyle = i % 4 === 0 ? 'rgba(59,130,246,.75)' : 'rgba(0,0,0,.3)';
+      vctx.beginPath(); vctx.moveTo(x, panY); vctx.lineTo(x, panY + sh); vctx.stroke();
+    }
+    for (let i = 1; i * grid.size < ch; i++) {
+      const y = Math.round(panY + i * step) + .5;
+      vctx.strokeStyle = i % 4 === 0 ? 'rgba(59,130,246,.75)' : 'rgba(0,0,0,.3)';
+      vctx.beginPath(); vctx.moveTo(panX, y); vctx.lineTo(panX + sw, y); vctx.stroke();
+    }
+    vctx.restore();
+  }
   vctx.strokeStyle = 'rgba(255,255,255,.25)'; vctx.lineWidth = 1;
   vctx.strokeRect(panX - .5, panY - .5, sw + 1, sh + 1);
   drawOverlay();
@@ -444,6 +463,13 @@ function drawOverlay() {
     return;
   }
   if (!l) return;
+  if (drag && drag.type === 'move' && drag.guides) {
+    const g = drag.guides, W = ovCv.width / dpr, H = ovCv.height / dpr;
+    octx.strokeStyle = '#f472b6'; octx.lineWidth = 1; octx.setLineDash([4, 3]);
+    if (g.x != null) { const x = Math.round(toScreen({ x: g.x, y: 0 }).x) + .5; octx.beginPath(); octx.moveTo(x, 0); octx.lineTo(x, H); octx.stroke(); }
+    if (g.y != null) { const y = Math.round(toScreen({ x: 0, y: g.y }).y) + .5; octx.beginPath(); octx.moveTo(0, y); octx.lineTo(W, y); octx.stroke(); }
+    octx.setLineDash([]);
+  }
   const pts = layerCorners(l).map(toScreen);
   strokePoly(pts, l.locked ? '#f59e0b' : '#3b82f6', 'rgba(255,255,255,.8)');
   if (l.locked) return;
@@ -673,6 +699,8 @@ ovCv.addEventListener('pointermove', (e) => {
       let dx = cp.x - drag.cp.x, dy = cp.y - drag.cp.y;
       if (e.shiftKey) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
       l.x = Math.round(drag.x0 + dx); l.y = Math.round(drag.y0 + dy);
+      drag.guides = null;
+      if (grid.snap && !e.altKey) drag.guides = snapLayer(l, e.shiftKey ? (Math.abs(dx) > Math.abs(dy) ? 'x' : 'y') : null);
       drag.changed = true; render(); return;
     }
     case 'rotate': {
@@ -703,6 +731,27 @@ ovCv.addEventListener('dblclick', () => {
   const l = selected();
   if (l && l.type === 'text') { const ta = $('#props textarea'); if (ta) ta.focus(); }
 });
+
+// 吸着: レイヤーの外接矩形の端・中心を、グリッド線とキャンバスの端・中心に合わせる（Alt で無効）
+// axis を指定するとその軸だけ吸着する。戻り値は表示用のガイド線 { x?, y? }
+function snapLayer(l, axis) {
+  const thr = 6 / view.zoom;
+  const lines = (len) => {
+    const out = [0, len / 2, len];
+    if (grid.on) for (let v = grid.size; v < len; v += grid.size) out.push(v);
+    return out;
+  };
+  const best = (targets, vals) => {
+    let d = thr, hit = null;
+    for (const v of vals) for (const t of targets) { const k = Math.abs(t - v); if (k < d) { d = k; hit = { delta: t - v, at: t }; } }
+    return hit;
+  };
+  const guides = {};
+  const b = layerBBox(l);
+  if (axis !== 'y') { const h = best(lines(state.canvas.w), [b.x, b.x + b.w / 2, b.x + b.w]); if (h) { l.x = Math.round(l.x + h.delta); guides.x = h.at; } }
+  if (axis !== 'x') { const h = best(lines(state.canvas.h), [b.y, b.y + b.h / 2, b.y + b.h]); if (h) { l.y = Math.round(l.y + h.delta); guides.y = h.at; } }
+  return guides;
+}
 
 // 角ハンドル: 既定で比率固定（Shiftで解除） / 辺ハンドル: 既定で自由（Shiftで比率固定） / Alt: 中心固定
 function doResize(l, e, cp) {
@@ -798,6 +847,92 @@ function applyMode() {
 $('#cropApply').onclick = applyMode;
 $('#cropCancel').onclick = () => exitMode();
 $('#btnCanvasCrop').onclick = () => ((mode && mode.kind === 'canvasCrop') ? exitMode() : enterMode('canvasCrop'));
+
+// =====================================================================
+//  グリッド
+// =====================================================================
+function saveGrid() { try { localStorage.setItem('browser-img-edit.grid', JSON.stringify(grid)); } catch (e) { /* ignore */ } }
+function updateGridUI() {
+  $('#btnGrid').classList.toggle('active', grid.on);
+  $('#gridSize').value = String(grid.size);
+  $('#snapOn').checked = grid.snap;
+}
+$('#btnGrid').onclick = () => { grid.on = !grid.on; saveGrid(); updateGridUI(); render(); };
+$('#gridSize').addEventListener('change', (e) => { grid.size = clamp(parseInt(e.target.value, 10) || 32, 2, 1024); saveGrid(); render(); });
+$('#snapOn').addEventListener('change', (e) => { grid.snap = e.target.checked; saveGrid(); });
+updateGridUI();
+
+// =====================================================================
+//  レイヤー結合
+// =====================================================================
+// 複数レイヤーを1枚の描画レイヤーに焼き込む（不透明度・合成モード・補正はレイヤー間で適用された結果になる）
+function rasterizeLayers(layers, name) {
+  const bs = layers.map((l) => { const b = layerBBox(l), pad = Math.ceil((l.filters.blur || 0) * 3); return { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 }; });
+  const x = Math.floor(Math.min(...bs.map((b) => b.x))), y = Math.floor(Math.min(...bs.map((b) => b.y)));
+  const w = clamp(Math.ceil(Math.max(...bs.map((b) => b.x + b.w))) - x, 1, 16384), h = clamp(Math.ceil(Math.max(...bs.map((b) => b.y + b.h))) - y, 1, 16384);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d');
+  ctx.translate(-x, -y);
+  for (const l of layers) if (l.visible) renderLayer(ctx, l);   // 非表示のレイヤーは内容を捨てる
+  const nl = baseLayer('paint', name);
+  nl.imgId = nl.id; nl.rev = 0; images.set(nl.imgId, cv); savePaintRev(nl.imgId, 0, cv);
+  nl.x = x; nl.y = y; nl.w = w; nl.h = h;
+  return nl;
+}
+function mergeDown() {
+  const l = selected(); if (!l) return;
+  const i = layerIndex(l.id);
+  if (i <= 0) { toast('下にレイヤーがありません', 2500); return; }
+  const below = state.layers[i - 1];
+  const nl = rasterizeLayers([below, l], below.name);
+  state.layers.splice(i - 1, 2, nl);
+  state.selectedId = nl.id;
+  commit();
+}
+function mergeVisible() {
+  const vis = state.layers.filter((l) => l.visible);
+  if (vis.length < 2) { toast('統合できる表示レイヤーが2枚以上ありません', 2500); return; }
+  const nl = rasterizeLayers(vis, '統合');
+  const top = layerIndex(vis[vis.length - 1].id);
+  state.layers.splice(top, 1, nl);
+  state.layers = state.layers.filter((l) => l.visible === false || l.id === nl.id);
+  state.selectedId = nl.id;
+  commit();
+}
+$('#layerMerge').onclick = mergeDown;
+$('#layerMergeVisible').onclick = mergeVisible;
+
+// =====================================================================
+//  キャンバス全体の回転 / 反転
+// =====================================================================
+function rotateCanvas(deg) {
+  const W = state.canvas.w, H = state.canvas.h;
+  for (const l of state.layers) {
+    const cx = l.x + l.w / 2, cy = l.y + l.h / 2;
+    let nx, ny;
+    if (deg === 90) { nx = H - cy; ny = cx; } else if (deg === -90) { nx = cy; ny = W - cx; } else { nx = W - cx; ny = H - cy; }
+    l.rotation = ((l.rotation + deg) % 360 + 360) % 360;
+    l.x = Math.round((nx - l.w / 2) * 10) / 10; l.y = Math.round((ny - l.h / 2) * 10) / 10;
+  }
+  if (deg !== 180) { state.canvas.w = H; state.canvas.h = W; }
+  commit(); zoomFit();
+}
+function flipCanvas(horizontal) {
+  const W = state.canvas.w, H = state.canvas.h;
+  for (const l of state.layers) {
+    const cx = l.x + l.w / 2, cy = l.y + l.h / 2;
+    // 鏡映: 内容を反転し、回転角の符号を反転する（F·R(θ) = R(-θ)·F）
+    if (horizontal) { l.flipX = !l.flipX; l.x = Math.round((W - cx - l.w / 2) * 10) / 10; }
+    else { l.flipY = !l.flipY; l.y = Math.round((H - cy - l.h / 2) * 10) / 10; }
+    l.rotation = ((360 - l.rotation) % 360 + 360) % 360;
+  }
+  commit();
+}
+$('#canvasRotL').onclick = () => rotateCanvas(-90);
+$('#canvasRotR').onclick = () => rotateCanvas(90);
+$('#canvasRot180').onclick = () => rotateCanvas(180);
+$('#canvasFlipX').onclick = () => flipCanvas(true);
+$('#canvasFlipY').onclick = () => flipCanvas(false);
 
 // =====================================================================
 //  キャンバス設定
@@ -1119,7 +1254,8 @@ function updateLayerList() {
   }
   for (const li of layerList.children) li._update(getLayer(li.dataset.id));
   const has = !!selected();
-  for (const id of ['#layerUp', '#layerDown', '#layerDup', '#layerDel']) $(id).disabled = !has;
+  for (const id of ['#layerUp', '#layerDown', '#layerDup', '#layerDel', '#layerMerge']) $(id).disabled = !has;
+  $('#layerMergeVisible').disabled = state.layers.filter((l) => l.visible).length < 2;
   $('#dropHint').hidden = state.layers.length > 0;
 }
 function buildLayerItem(l) {
@@ -1367,6 +1503,7 @@ function buildProps(l) {
   // ---- 操作 ----
   propsRoot.append(sec(null, row(null, el('div', { class: 'btns' },
     btn('複製', duplicateSelected),
+    btn('下と結合', mergeDown),
     btn('中央に配置', () => { l.x = Math.round((state.canvas.w - l.w) / 2); l.y = Math.round((state.canvas.h - l.h) / 2); commit(); }),
     btn('キャンバスに合わせる', () => {
       const k = Math.min(state.canvas.w / l.w, state.canvas.h / l.h);
@@ -1443,6 +1580,8 @@ window.addEventListener('keydown', (e) => {
   if (ctrl && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
   if (ctrl && k === 'y') { e.preventDefault(); redo(); return; }
   if (ctrl && k === 'd') { e.preventDefault(); duplicateSelected(); return; }
+  if (ctrl && k === 'e') { e.preventDefault(); if (e.shiftKey) mergeVisible(); else mergeDown(); return; }
+  if (ctrl && e.key === "'") { e.preventDefault(); $('#btnGrid').click(); return; }
   if (ctrl && k === 'o') { e.preventDefault(); $('#fileInput').click(); return; }
   if (ctrl && k === 's') { e.preventDefault(); if (e.shiftKey) $('#btnSave').click(); else openExport(); return; }
   if (ctrl && k === '0') { e.preventDefault(); zoomFit(); return; }
@@ -1481,5 +1620,5 @@ new ResizeObserver(resizeView).observe(stage);
 commit();
 zoomFit();
 window.__appLoaded = true;
-if (location.hash === '#debug') window.__dbg = { state, images, paintRevs, history, renderNow, loadProject, serializeProject };   // 動作確認用
+if (location.hash === '#debug') window.__dbg = { state, view, grid, images, paintRevs, history, renderNow, loadProject, serializeProject };   // 動作確認用
 })();

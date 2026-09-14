@@ -8,14 +8,18 @@
 </head>
 <body>
 <header id="toolbar">
+<div class="bar">
   <div class="group">
-    <button type="button" id="btnOpen" class="primary">画像を開く</button>
-    <input type="file" id="fileInput" accept="image/*,.png,.jpg,.jpeg,.jfif,.gif,.webp,.bmp,.svg,.avif,.ico,.tif,.tiff" multiple hidden>
+    <button type="button" id="btnOpen" class="primary" title="画像またはプロジェクト(.json)を開く (Ctrl+O)">開く</button>
+    <input type="file" id="fileInput" accept="image/*,.png,.jpg,.jpeg,.jfif,.gif,.webp,.bmp,.svg,.avif,.ico,.tif,.tiff,.json,application/json" multiple hidden>
+    <button type="button" id="btnSave" title="レイヤー構成ごとプロジェクト(.json)として保存 (Ctrl+Shift+S)">保存</button>
+    <button type="button" id="btnNew" title="すべてのレイヤーを消して新規キャンバスにする">新規</button>
     <span class="sep"></span>
     <button type="button" id="btnAddText">テキスト</button>
     <button type="button" id="btnAddRect">矩形</button>
     <button type="button" id="btnAddEllipse">楕円</button>
     <button type="button" id="btnAddLine">線</button>
+    <button type="button" id="btnAddPaint" title="フリーハンドで描くためのレイヤーを追加">描画レイヤー</button>
   </div>
   <div class="group">
     <button type="button" id="btnUndo" title="元に戻す (Ctrl+Z)">↶</button>
@@ -45,6 +49,22 @@
   <div class="group right">
     <button type="button" id="btnExport" class="primary">書き出し</button>
   </div>
+</div>
+<div class="bar" id="tools">
+  <div class="group">
+    <button type="button" data-tool="select" class="active" title="選択 / 移動 (V)">選択</button>
+    <button type="button" data-tool="pen" title="ペン (P)">ペン</button>
+    <button type="button" data-tool="brush" title="ブラシ（ソフト） (B)">ブラシ</button>
+    <button type="button" data-tool="eraser" title="消しゴム (E)">消しゴム</button>
+  </div>
+  <div class="group" id="toolOpts" hidden>
+    <input type="color" id="brushColor" value="#ff3b30" title="色（Alt+クリックでキャンバスから取得）">
+    <label title="太さ ( [ / ] で変更 )">太さ <input type="range" id="brushSize" min="1" max="300" value="12"><span class="val" id="brushSizeVal">12</span></label>
+    <label>不透明度 <input type="range" id="brushOpacity" min="1" max="100" value="100"><span class="val" id="brushOpacityVal">100</span></label>
+    <label title="ペンタブレットの筆圧で太さを変える"><input type="checkbox" id="brushPressure" checked>筆圧</label>
+    <span class="hint">描画レイヤーを選択して描きます（未選択なら自動で追加）</span>
+  </div>
+</div>
 </header>
 
 <main>
@@ -52,7 +72,12 @@
     <canvas id="view"></canvas>
     <canvas id="overlay"></canvas>
     <div id="dropHint">
-      <div>ここに画像をドロップ<div class="sub">または「画像を開く」／ Ctrl+V で貼り付け</div></div>
+      <div>ここに画像をドロップ<div class="sub">または「開く」／ Ctrl+V で貼り付け ／ ペン(P)で描き始める</div></div>
+    </div>
+    <div id="restoreBar" hidden>
+      <span id="restoreMsg"></span>
+      <button type="button" id="restoreYes" class="primary">復元</button>
+      <button type="button" id="restoreNo">破棄</button>
     </div>
     <div id="cropBar" hidden>
       <span id="cropMsg"></span>
@@ -111,6 +136,17 @@
   </div>
 </div>
 
+<div id="saveModal" class="modal" hidden>
+  <div class="dialog">
+    <h2>プロジェクトを保存</h2>
+    <label class="field">ファイル名 <input type="text" id="saveName" value="project"> .json</label>
+    <p class="hint">レイヤー構成・画像・描画をまとめて保存します。「開く」またはドロップで再開できます。</p>
+    <div class="row end">
+      <button type="button" id="saveCancel">キャンセル</button>
+      <button type="button" id="saveDo" class="primary">保存</button>
+    </div>
+  </div>
+</div>
 <div id="toast" hidden></div>
 <div id="loadError" class="modal" hidden>
   <div class="dialog">

@@ -48,10 +48,12 @@ label { display: inline-flex; align-items: center; gap: 4px; }
 .sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; }
 
 /* ---------- ツールバー ---------- */
-#toolbar {
-  display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center;
-  padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--border);
-}
+#toolbar { background: var(--panel); border-bottom: 1px solid var(--border); }
+#toolbar .bar { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 6px 10px; }
+#tools { border-top: 1px solid var(--border); background: var(--bg); }
+#tools input[type=range] { width: 110px; }
+#tools .val { min-width: 28px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+#tools .hint { margin-left: 6px; }
 #toolbar .group { display: flex; align-items: center; gap: 4px; }
 #toolbar .group.right { margin-left: auto; }
 #zoomLabel { min-width: 48px; text-align: center; color: var(--muted); }
@@ -81,7 +83,7 @@ main { flex: 1; display: flex; min-height: 0; }
 #loadError .dialog { width: 560px; }
 #loadError ul { padding-left: 20px; line-height: 1.7; }
 #loadError a { color: var(--accent); }
-#cropBar {
+#cropBar, #restoreBar {
   position: absolute; left: 50%; top: 12px; transform: translateX(-50%);
   display: flex; gap: 8px; align-items: center;
   background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px;

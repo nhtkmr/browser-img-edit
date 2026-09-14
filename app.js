@@ -29,7 +29,8 @@ const state = {
   selectedId: null,
 };
 const view = { zoom: 1, panX: 0, panY: 0, dpr: window.devicePixelRatio || 1 };
-const images = new Map();   // imgId -> HTMLImageElement（履歴のJSONには含めない）
+const images = new Map();   // imgId -> HTMLImageElement | HTMLCanvasElement（履歴のJSONには含めない）
+const imageBlobs = new Map(); // imgId -> Blob（元ファイル。プロジェクト保存で再エンコードせずに使う）
 let nextId = 1;
 const uid = () => 'L' + (nextId++);
 let mode = null;            // null | { kind:'layerCrop'|'canvasCrop', layerId?, rect? }
@@ -54,10 +55,11 @@ function baseLayer(type, name) {
     blend: 'source-over', filters: defaultFilters(),
   };
 }
-function makeImageLayer(img, name) {
+function makeImageLayer(img, name, blob = null) {
   const l = baseLayer('image', name);
   l.imgId = l.id;
   images.set(l.imgId, img);
+  if (blob) imageBlobs.set(l.imgId, blob);
   l.w = img.naturalWidth; l.h = img.naturalHeight;
   l.crop = { sx: 0, sy: 0, sw: img.naturalWidth, sh: img.naturalHeight };
   return l;
@@ -76,6 +78,16 @@ function makeShapeLayer(kind) {
   const l = baseLayer('shape', names[kind]);
   Object.assign(l, { kind, fillOn: kind !== 'line', fill: '#3b82f6', stroke: '#ffffff', strokeWidth: kind === 'line' ? 6 : 0, radius: 0 });
   l.w = kind === 'line' ? 300 : 200; l.h = kind === 'line' ? 24 : 200;
+  return l;
+}
+// 描画レイヤー: キャンバスと同じ大きさのビットマップを持つ。内容は images に、履歴には rev 番号だけを持ち paintRevs で復元する
+function makePaintLayer(w = state.canvas.w, h = state.canvas.h) {
+  const l = baseLayer('paint', '描画');
+  const cv = document.createElement('canvas'); cv.width = Math.max(1, w); cv.height = Math.max(1, h);
+  l.imgId = l.id; l.rev = 0;
+  images.set(l.imgId, cv);
+  savePaintRev(l.imgId, 0, cv);
+  l.w = cv.width; l.h = cv.height;
   return l;
 }
 
@@ -108,6 +120,8 @@ function commit() {
   history.stack.push(snapshot());
   if (history.stack.length > history.MAX) history.stack.shift();
   history.idx = history.stack.length - 1;
+  prunePaintRevs();
+  scheduleAutosave();
   refresh();
 }
 function restore(json) {
@@ -115,7 +129,51 @@ function restore(json) {
   state.canvas = s.canvas; state.layers = s.layers;
   if (!getLayer(state.selectedId)) state.selectedId = null;
   exitMode(false);
+  syncPaintRevs();
+  scheduleAutosave();
   refresh();
+}
+
+// ---------- 描画レイヤーのビットマップ履歴 ----------
+// imgId -> Map(rev -> Promise<Blob>)。PNG 圧縮して保持する（透明が多い描画レイヤーは小さくなる）
+const paintRevs = new Map();
+const canvasToBlob = (cv, type = 'image/png', q) => new Promise((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('toBlob failed'))), type, q));
+function savePaintRev(imgId, rev, cv) {
+  if (!paintRevs.has(imgId)) paintRevs.set(imgId, new Map());
+  cv._rev = rev;
+  paintRevs.get(imgId).set(rev, canvasToBlob(cv));
+}
+// undo/redo 後: 各描画レイヤーのビットマップを l.rev の内容に戻す（非同期。戻り次第再描画）
+function syncPaintRevs() {
+  for (const l of state.layers) {
+    if (l.type !== 'paint') continue;
+    const cv = images.get(l.imgId);
+    if (!cv) continue;
+    if (cv._rev === l.rev) { cv._want = l.rev; continue; }   // 読み込み中の古い要求を無効化
+    const p = paintRevs.get(l.imgId) && paintRevs.get(l.imgId).get(l.rev);
+    if (!p) continue;
+    cv._want = l.rev;
+    p.then((blob) => createImageBitmap(blob)).then((bmp) => {
+      if (cv._want !== l.rev) return;
+      cv.width = bmp.width; cv.height = bmp.height;
+      cv.getContext('2d').drawImage(bmp, 0, 0);
+      cv._rev = l.rev; bmp.close();
+      refresh();
+    }).catch((err) => console.error('描画履歴の復元に失敗:', err));
+  }
+}
+// 履歴のどこからも参照されなくなった rev / 画像を破棄する
+function prunePaintRevs() {
+  const used = new Map();   // imgId -> Set(rev)
+  const mark = (layers) => { for (const l of layers) if (l.imgId) { if (!used.has(l.imgId)) used.set(l.imgId, new Set()); if (l.type === 'paint') used.get(l.imgId).add(l.rev); } };
+  for (const json of history.stack) mark(JSON.parse(json).layers);
+  mark(state.layers);
+  for (const [id, revs] of paintRevs) {
+    const u = used.get(id);
+    if (!u) { paintRevs.delete(id); continue; }
+    for (const r of [...revs.keys()]) if (!u.has(r)) revs.delete(r);
+  }
+  for (const id of [...images.keys()]) if (!used.has(id)) { images.delete(id); imageBlobs.delete(id); }
 }
 function undo() { if (history.idx > 0) { history.idx--; restore(history.stack[history.idx]); } }
 function redo() { if (history.idx < history.stack.length - 1) { history.idx++; restore(history.stack[history.idx]); } }
@@ -150,6 +208,11 @@ function duplicateSelected() {
   const l = selected(); if (!l) return;
   const c = JSON.parse(JSON.stringify(l));
   c.id = uid(); c.name = l.name + ' コピー'; c.x += 20; c.y += 20;
+  if (l.type === 'paint') {
+    const src = images.get(l.imgId), cv = document.createElement('canvas');
+    cv.width = src.width; cv.height = src.height; cv.getContext('2d').drawImage(src, 0, 0);
+    c.imgId = c.id; c.rev = 0; images.set(c.imgId, cv); savePaintRev(c.imgId, 0, cv);
+  }
   state.layers.splice(layerIndex(l.id) + 1, 0, c);
   state.selectedId = c.id;
   commit();
@@ -185,9 +248,19 @@ function hitLayer(p) {
     const l = state.layers[i];
     if (!l.visible) continue;
     const q = canvasToLocal(l, p);
-    if (Math.abs(q.x) <= l.w / 2 && Math.abs(q.y) <= l.h / 2) return l;
+    if (Math.abs(q.x) <= l.w / 2 && Math.abs(q.y) <= l.h / 2) {
+      if (l.type === 'paint' && !paintHit(l, p)) continue;   // 描画レイヤーは透明部分を素通し
+      return l;
+    }
   }
   return null;
+}
+function paintHit(l, p) {
+  const cv = images.get(l.imgId); if (!cv) return false;
+  const b = toBitmap(l, p);
+  const x = Math.floor(b.x), y = Math.floor(b.y);
+  if (x < 0 || y < 0 || x >= cv.width || y >= cv.height) return false;
+  return cv.getContext('2d').getImageData(x, y, 1, 1).data[3] > 8;
 }
 
 // =====================================================================
@@ -241,6 +314,9 @@ function drawLayerContent(ctx, l) {
       if (l.strokeWidth > 0) { ctx.strokeStyle = l.strokeColor; ctx.lineWidth = l.strokeWidth * 2; ctx.strokeText(s, ax, y); }
       ctx.fillStyle = l.color; ctx.fillText(s, ax, y);
     });
+  } else if (l.type === 'paint') {
+    const src = (stroke && stroke.layerId === l.id) ? stroke.preview : images.get(l.imgId);
+    if (src) ctx.drawImage(src, -w / 2, -h / 2, w, h);
   } else if (l.type === 'shape') {
     ctx.lineWidth = l.strokeWidth; ctx.strokeStyle = l.stroke; ctx.fillStyle = l.fill;
     ctx.beginPath();
@@ -356,6 +432,17 @@ function drawOverlay() {
   }
 
   const l = selected();
+  if (tool.kind !== 'select') {
+    if (l && l.type === 'paint') strokePoly(layerCorners(l).map(toScreen), 'rgba(59,130,246,.6)', 'rgba(255,255,255,.3)');
+    if (hoverSp && !spaceDown) {
+      const r = Math.max(1.5, tool.size * view.zoom / 2);
+      octx.lineWidth = 1;
+      octx.beginPath(); octx.arc(hoverSp.x, hoverSp.y, r, 0, Math.PI * 2); octx.strokeStyle = '#000'; octx.stroke();
+      octx.beginPath(); octx.arc(hoverSp.x, hoverSp.y, r + 1, 0, Math.PI * 2); octx.strokeStyle = '#fff'; octx.stroke();
+      if (r < 4) { octx.fillStyle = '#fff'; octx.fillRect(hoverSp.x - 0.5, hoverSp.y - 0.5, 1, 1); }
+    }
+    return;
+  }
   if (!l) return;
   const pts = layerCorners(l).map(toScreen);
   strokePoly(pts, l.locked ? '#f59e0b' : '#3b82f6', 'rgba(255,255,255,.8)');
@@ -409,6 +496,112 @@ $('#zoomFit').onclick = zoomFit;
 $('#zoom100').onclick = () => setZoom(1, ovCv.clientWidth / 2, ovCv.clientHeight / 2);
 
 // =====================================================================
+//  描画ツール（ペン / ブラシ / 消しゴム）
+// =====================================================================
+const tool = { kind: 'select', size: 12, color: '#ff3b30', opacity: 1, pressure: true };
+let stroke = null;    // 描画中: { layerId, cv, ctx, preview, pctx, last, eraser, opacity }
+let hoverSp = null;   // ブラシカーソル表示用
+const TOOL_KEYS = { v: 'select', p: 'pen', b: 'brush', e: 'eraser' };
+
+function setTool(kind) {
+  tool.kind = kind;
+  for (const b of document.querySelectorAll('#tools button[data-tool]')) b.classList.toggle('active', b.dataset.tool === kind);
+  $('#toolOpts').hidden = kind === 'select';
+  $('#brushColor').disabled = kind === 'eraser';
+  ovCv.style.cursor = kind === 'select' ? '' : 'none';
+  if (mode) exitMode(false);
+  render();
+}
+// キャンバス座標 -> 描画レイヤーのビットマップ座標（k: 長さの倍率）
+function toBitmap(l, cp) {
+  const q = canvasToLocal(l, cp);
+  const bmp = images.get(l.imgId);
+  const kx = bmp.width / l.w, ky = bmp.height / l.h;
+  return { x: ((l.flipX ? -q.x : q.x) + l.w / 2) * kx, y: ((l.flipY ? -q.y : q.y) + l.h / 2) * ky, k: (kx + ky) / 2 };
+}
+function beginStroke(e) {
+  let l = selected();
+  if (!l || l.type !== 'paint' || l.locked || !l.visible) {
+    l = makePaintLayer();
+    addLayer(l, { center: false });
+    updateLayerList();
+  }
+  const bmp = images.get(l.imgId);
+  const cv = document.createElement('canvas'); cv.width = bmp.width; cv.height = bmp.height;
+  const preview = document.createElement('canvas'); preview.width = bmp.width; preview.height = bmp.height;
+  stroke = { layerId: l.id, cv, ctx: cv.getContext('2d'), preview, pctx: preview.getContext('2d'),
+    last: null, eraser: tool.kind === 'eraser', opacity: tool.opacity };
+  strokeTo(e);
+}
+function strokeTo(e) {
+  const l = getLayer(stroke.layerId); if (!l) return;
+  let evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+  if (!evs.length) evs = [e];
+  for (const ev of evs) {
+    const p = toBitmap(l, toCanvas(ptr(ev)));
+    const pr = (tool.pressure && ev.pointerType === 'pen') ? clamp(ev.pressure, 0.05, 1) : 1;
+    const pt = { x: p.x, y: p.y, w: Math.max(0.5, tool.size * pr * p.k) };
+    drawSegment(stroke.ctx, stroke.last, pt);
+    stroke.last = pt;
+  }
+  // プレビュー = 現在のビットマップ + 描画中のストローク（不透明度・消しゴムをレイヤー内で合成）
+  const { pctx, preview } = stroke;
+  pctx.globalAlpha = 1; pctx.globalCompositeOperation = 'source-over';
+  pctx.clearRect(0, 0, preview.width, preview.height);
+  pctx.drawImage(images.get(l.imgId), 0, 0);
+  pctx.globalAlpha = stroke.opacity; pctx.globalCompositeOperation = stroke.eraser ? 'destination-out' : 'source-over';
+  pctx.drawImage(stroke.cv, 0, 0);
+  render();
+}
+function drawSegment(ctx, a, b) {
+  const color = tool.kind === 'eraser' ? '#000000' : tool.color;
+  if (tool.kind === 'brush') {
+    // ソフトブラシ: 放射状グラデーションのスタンプを等間隔に打つ
+    const stamp = (x, y, w) => {
+      const r = Math.max(0.5, w / 2);
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, color); g.addColorStop(0.4, color); g.addColorStop(1, color + '00');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    };
+    if (!a) { stamp(b.x, b.y, b.w); return; }
+    const d = Math.hypot(b.x - a.x, b.y - a.y), step = Math.max(0.5, Math.min(a.w, b.w) / 5);
+    const n = Math.max(1, Math.ceil(d / step));
+    for (let i = 1; i <= n; i++) { const t = i / n; stamp(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.w + (b.w - a.w) * t); }
+    return;
+  }
+  ctx.fillStyle = color; ctx.strokeStyle = color; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if (!a) { ctx.beginPath(); ctx.arc(b.x, b.y, b.w / 2, 0, Math.PI * 2); ctx.fill(); return; }
+  ctx.lineWidth = (a.w + b.w) / 2;
+  ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+}
+function endStroke() {
+  const st = stroke; stroke = null;
+  const l = getLayer(st.layerId); if (!l) return;
+  const bmp = images.get(l.imgId), ctx = bmp.getContext('2d');
+  ctx.globalAlpha = st.opacity; ctx.globalCompositeOperation = st.eraser ? 'destination-out' : 'source-over';
+  ctx.drawImage(st.cv, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  l.rev++;
+  savePaintRev(l.imgId, l.rev, bmp);
+  commit();
+}
+// Alt+クリック: 合成結果から色を取得
+function pickColor(cp) {
+  const x = Math.floor(cp.x), y = Math.floor(cp.y);
+  if (x < 0 || y < 0 || x >= doc.width || y >= doc.height) return;
+  const d = dctx.getImageData(x, y, 1, 1).data;
+  if (d[3] === 0) return;
+  tool.color = '#' + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, '0')).join('');
+  $('#brushColor').value = tool.color;
+}
+for (const b of document.querySelectorAll('#tools button[data-tool]')) b.onclick = () => setTool(b.dataset.tool);
+$('#brushColor').addEventListener('input', (e) => { tool.color = e.target.value; });
+$('#brushSize').addEventListener('input', (e) => { tool.size = parseInt(e.target.value, 10); $('#brushSizeVal').textContent = tool.size; });
+$('#brushOpacity').addEventListener('input', (e) => { tool.opacity = parseInt(e.target.value, 10) / 100; $('#brushOpacityVal').textContent = e.target.value; });
+$('#brushPressure').addEventListener('change', (e) => { tool.pressure = e.target.checked; });
+function setBrushSize(v) { tool.size = clamp(Math.round(v), 1, 300); $('#brushSize').value = tool.size; $('#brushSizeVal').textContent = tool.size; drawOverlay(); }
+
+// =====================================================================
 //  ポインタ操作
 // =====================================================================
 const ptr = (e) => { const r = ovCv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
@@ -430,6 +623,12 @@ ovCv.addEventListener('pointerdown', (e) => {
     drag = { type: 'rect', start };
     mode.rect = null;
     render();
+    return;
+  }
+  if (tool.kind !== 'select') {
+    if (e.altKey) { pickColor(cp); return; }
+    drag = { type: 'paint' };
+    beginStroke(e);
     return;
   }
 
@@ -454,9 +653,12 @@ ovCv.addEventListener('pointerdown', (e) => {
 
 ovCv.addEventListener('pointermove', (e) => {
   const sp = ptr(e), cp = toCanvas(sp);
-  if (!drag) { updateCursor(sp, cp); return; }
+  hoverSp = sp;
+  if (!drag) { if (tool.kind !== 'select') drawOverlay(); else updateCursor(sp, cp); return; }
   const l = selected();
   switch (drag.type) {
+    case 'paint':
+      if (stroke) strokeTo(e); return;
     case 'pan':
       view.panX = drag.panX0 + sp.x - drag.sp.x; view.panY = drag.panY0 + sp.y - drag.sp.y;
       render(); return;
@@ -488,12 +690,14 @@ ovCv.addEventListener('pointermove', (e) => {
 });
 const endDrag = () => {
   if (!drag) return;
-  const changed = drag.changed;
+  const { changed, type } = drag;
   drag = null;
-  ovCv.style.cursor = spaceDown ? 'grab' : '';
+  ovCv.style.cursor = spaceDown ? 'grab' : tool.kind === 'select' ? '' : 'none';
+  if (type === 'paint') { if (stroke) endStroke(); return; }
   if (changed) commit();
 };
 ovCv.addEventListener('pointerup', endDrag);
+ovCv.addEventListener('pointerleave', () => { hoverSp = null; if (tool.kind !== 'select') drawOverlay(); });
 ovCv.addEventListener('pointercancel', endDrag);
 ovCv.addEventListener('dblclick', () => {
   const l = selected();
@@ -525,6 +729,7 @@ function doResize(l, e, cp) {
 
 function updateCursor(sp, cp) {
   if (spaceDown) { ovCv.style.cursor = 'grab'; return; }
+  if (tool.kind !== 'select') { ovCv.style.cursor = 'none'; return; }
   if (mode) { ovCv.style.cursor = 'crosshair'; return; }
   const l = selected();
   if (l && !l.locked) {
@@ -648,9 +853,12 @@ $('#toast').onclick = () => { $('#toast').hidden = true; };
 const IMAGE_EXT = /\.(png|jpe?g|jfif|pjpeg|gif|webp|bmp|dib|svgz?|avif|ico|cur|tiff?|heic|heif)$/i;
 const isImageFile = (f) => f.type.startsWith('image/') || (!f.type && IMAGE_EXT.test(f.name || ''));
 
+const isProjectFile = (f) => /\.json$/i.test(f.name || '') || f.type === 'application/json';
 async function loadFiles(files) {
   const all = [...files];
   if (!all.length) return;
+  const proj = all.find(isProjectFile);
+  if (proj) { openProjectFile(proj); return; }
   const list = all.filter(isImageFile);
   if (!list.length) {
     toast(`画像ファイルではないため読み込めません: ${all.map((f) => f.name || '(名前なし)').join(', ')}`);
@@ -663,7 +871,7 @@ async function loadFiles(files) {
     try {
       const img = await loadImage(f);
       const first = state.layers.length === 0;
-      const l = makeImageLayer(img, (f.name || '').replace(/\.[^.]+$/, '') || '画像');
+      const l = makeImageLayer(img, (f.name || '').replace(/\.[^.]+$/, '') || '画像', f);
       if (first) { state.canvas.w = img.naturalWidth; state.canvas.h = img.naturalHeight; addLayer(l, { center: false }); }
       else addLayer(l);
       added++;
@@ -714,11 +922,187 @@ document.addEventListener('paste', (e) => {
   loadFiles(files.map((f, i) => new File([f], f.name || `貼り付け${i + 1}.png`, { type: f.type })));
 });
 
+// =====================================================================
+//  プロジェクトの保存 / 読み込み / 自動保存
+// =====================================================================
+const PROJECT_APP = 'browser-img-edit';
+const blobToDataURL = (b) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(b); });
+function dataURLToBlob(u) {
+  const i = u.indexOf(','), meta = u.slice(5, i), b64 = u.slice(i + 1);
+  const type = meta.split(';')[0] || 'application/octet-stream';
+  const bin = atob(b64), arr = new Uint8Array(bin.length);
+  for (let k = 0; k < bin.length; k++) arr[k] = bin.charCodeAt(k);
+  return new Blob([arr], { type });
+}
+// 現在の状態を { meta, images: {imgId: Blob} } にまとめる
+async function serializeProject() {
+  const imgs = {};
+  for (const l of state.layers) {
+    if (!l.imgId || imgs[l.imgId]) continue;
+    const src = images.get(l.imgId); if (!src) continue;
+    let blob = imageBlobs.get(l.imgId);
+    if (!blob) {
+      let cv = src;
+      if (!(src instanceof HTMLCanvasElement)) { cv = document.createElement('canvas'); cv.width = src.naturalWidth; cv.height = src.naturalHeight; cv.getContext('2d').drawImage(src, 0, 0); }
+      blob = await canvasToBlob(cv);
+    }
+    imgs[l.imgId] = blob;
+  }
+  return { app: PROJECT_APP, version: 1, savedAt: Date.now(), canvas: state.canvas, layers: state.layers, selectedId: state.selectedId, images: imgs };
+}
+// プロジェクトを現在の状態に展開する（images の値は Blob または dataURL）。ID は付け直す
+async function loadProject(data) {
+  if (!data || data.app !== PROJECT_APP || !Array.isArray(data.layers)) throw new Error('not a project');
+  const idMap = new Map();
+  const layers = [];
+  for (const src of data.layers) {
+    const l = { ...baseLayer(src.type, src.name || 'レイヤー'), ...src };
+    l.id = uid(); l.filters = { ...defaultFilters(), ...(src.filters || {}) };
+    if (src.imgId) {
+      if (!idMap.has(src.imgId)) idMap.set(src.imgId, l.type === 'paint' ? l.id : l.id);
+      l.imgId = idMap.get(src.imgId);
+    }
+    layers.push(l);
+  }
+  const newImages = new Map(), newBlobs = new Map();
+  for (const [oldId, newId] of idMap) {
+    const v = data.images && data.images[oldId];
+    if (!v) throw new Error('image missing: ' + oldId);
+    const blob = typeof v === 'string' ? dataURLToBlob(v) : v;
+    const img = await loadImage(blob);
+    const isPaint = layers.some((l) => l.imgId === newId && l.type === 'paint');
+    if (isPaint) {
+      const cv = document.createElement('canvas'); cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+      cv.getContext('2d').drawImage(img, 0, 0);
+      newImages.set(newId, cv);
+    } else { newImages.set(newId, img); newBlobs.set(newId, blob); }
+  }
+  // ここまで失敗なし。状態を差し替える
+  for (const [id, v] of newImages) images.set(id, v);
+  for (const [id, v] of newBlobs) imageBlobs.set(id, v);
+  for (const l of layers) if (l.type === 'paint') { l.rev = 0; savePaintRev(l.imgId, 0, images.get(l.imgId)); }
+  const c = data.canvas || {};
+  state.canvas = { w: clamp(Math.round(c.w) || 1280, 1, 16384), h: clamp(Math.round(c.h) || 720, 1, 16384), bg: c.bg === 'color' ? 'color' : 'transparent', bgColor: c.bgColor || '#ffffff' };
+  state.layers = layers;
+  const selOld = data.layers.findIndex((l) => l.id === data.selectedId);
+  state.selectedId = selOld >= 0 ? layers[selOld].id : null;
+  exitMode(false);
+  commit();
+  zoomFit();
+}
+async function openProjectFile(file) {
+  try {
+    const data = JSON.parse(await file.text());
+    await loadProject(data);
+    toast(`プロジェクト「${file.name}」を読み込みました（Ctrl+Z で戻せます）`, 4000);
+  } catch (err) {
+    console.error(err);
+    toast(`プロジェクトを読み込めませんでした: ${file.name}`);
+  }
+}
+async function saveProjectFile(name) {
+  const p = await serializeProject();
+  const imgs = {};
+  for (const [id, b] of Object.entries(p.images)) imgs[id] = await blobToDataURL(b);
+  const json = JSON.stringify({ ...p, images: imgs });
+  const blob = new Blob([json], { type: 'application/json' });
+  const a = el('a', { href: URL.createObjectURL(blob), download: name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+const saveModal = $('#saveModal');
+$('#btnSave').onclick = () => { saveModal.hidden = false; $('#saveName').focus(); $('#saveName').select(); };
+$('#saveCancel').onclick = () => { saveModal.hidden = true; };
+saveModal.addEventListener('click', (e) => { if (e.target === saveModal) saveModal.hidden = true; });
+$('#saveName').addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') $('#saveDo').click(); if (e.key === 'Escape') saveModal.hidden = true; });
+$('#saveDo').onclick = async () => {
+  const name = ($('#saveName').value.trim() || 'project').replace(/\.json$/i, '') + '.json';
+  saveModal.hidden = true;
+  try { await saveProjectFile(name); } catch (err) { console.error(err); toast('保存に失敗しました'); }
+};
+$('#btnNew').onclick = () => {
+  if (!state.layers.length) return;
+  state.layers = []; state.selectedId = null;
+  state.canvas = { w: 1280, h: 720, bg: 'transparent', bgColor: '#ffffff' };
+  exitMode(false); commit(); zoomFit();
+  toast('新規キャンバスにしました（Ctrl+Z で戻せます）', 3000);
+};
+
+// ---------- 自動保存（IndexedDB） ----------
+const AUTOSAVE_KEY = 'autosave';
+let idbPromise = null;
+function idbOpen() {
+  if (!idbPromise) idbPromise = new Promise((res, rej) => {
+    if (!window.indexedDB) { rej(new Error('no indexedDB')); return; }
+    const r = indexedDB.open(PROJECT_APP, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('kv');
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+    r.onblocked = () => rej(new Error('blocked'));
+  });
+  return idbPromise;
+}
+async function idbReq(mode, fn) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const tx = db.transaction('kv', mode), req = fn(tx.objectStore('kv'));
+    req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error);
+  });
+}
+let autosaveTimer = null, autosaving = false, autosaveDirty = false, autosaveBroken = false;
+function scheduleAutosave() {
+  if (autosaveBroken) return;
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(autosaveNow, 1500);
+}
+async function autosaveNow() {
+  if (autosaving) { autosaveDirty = true; return; }
+  autosaving = true;
+  try {
+    if (!state.layers.length) { await idbReq('readwrite', (st) => st.delete(AUTOSAVE_KEY)); }
+    else {
+      const data = await serializeProject();   // トランザクションの外で先に作る（await をまたぐと tx が閉じるため）
+      await idbReq('readwrite', (st) => st.put(data, AUTOSAVE_KEY));
+    }
+  } catch (err) {
+    // 保存先が使えない環境（プライベートモード等）では以後あきらめる
+    console.warn('自動保存できません:', err); autosaveBroken = true;
+  } finally {
+    autosaving = false;
+    if (autosaveDirty) { autosaveDirty = false; scheduleAutosave(); }
+  }
+}
+window.addEventListener('beforeunload', () => { if (autosaveTimer) { clearTimeout(autosaveTimer); autosaveNow(); } });
+// 起動時: 前回の自動保存があれば復元を提案する（データはメモリに保持し、その後の自動保存で上書きされても復元できるようにする）
+let pendingRestore = null;
+async function checkAutosave() {
+  let data = null;
+  try { data = await idbReq('readonly', (st) => st.get(AUTOSAVE_KEY)); } catch (err) { console.warn('自動保存を読めません:', err); autosaveBroken = true; return; }
+  if (!data || !Array.isArray(data.layers) || !data.layers.length) return;
+  pendingRestore = data;
+  const d = new Date(data.savedAt || 0);
+  $('#restoreMsg').textContent = `前回の作業内容があります（${d.toLocaleString()}・レイヤー ${data.layers.length} 枚）`;
+  $('#restoreBar').hidden = false;
+}
+$('#restoreYes').onclick = async () => {
+  $('#restoreBar').hidden = true;
+  const data = pendingRestore; pendingRestore = null;
+  if (!data) return;
+  try { await loadProject(data); toast('前回の作業内容を復元しました', 3000); }
+  catch (err) { console.error(err); toast('復元に失敗しました'); }
+};
+$('#restoreNo').onclick = async () => {
+  $('#restoreBar').hidden = true; pendingRestore = null;
+  try { if (!state.layers.length) await idbReq('readwrite', (st) => st.delete(AUTOSAVE_KEY)); } catch (err) { /* ignore */ }
+};
+checkAutosave();
+
 // ---------- 追加ボタン ----------
 $('#btnAddText').onclick = () => { addLayer(makeTextLayer()); commit(); const ta = $('#props textarea'); if (ta) { ta.focus(); ta.select(); } };
 $('#btnAddRect').onclick = () => { addLayer(makeShapeLayer('rect')); commit(); };
 $('#btnAddEllipse').onclick = () => { addLayer(makeShapeLayer('ellipse')); commit(); };
 $('#btnAddLine').onclick = () => { addLayer(makeShapeLayer('line')); commit(); };
+$('#btnAddPaint').onclick = () => { addLayer(makePaintLayer(), { center: false }); commit(); if (tool.kind === 'select') setTool('pen'); };
 
 // =====================================================================
 //  レイヤーパネル
@@ -948,6 +1332,15 @@ function buildProps(l) {
         num(() => l.strokeWidth, (v) => { l.strokeWidth = Math.max(0, v); retext(l); }, { min: 0, title: '縁取りの太さ' }), 'px'),
       row(null, btn('サイズを文字に合わせる', () => { l.w = l.natW; l.h = l.natH; commit(); })),
     ));
+  } else if (l.type === 'paint') {
+    const bmp = images.get(l.imgId);
+    propsRoot.append(sec('描画',
+      row(null, el('span', { class: 'hint' }, bmp ? `ビットマップ ${bmp.width} × ${bmp.height} px` : '')),
+      row(null, el('div', { class: 'btns' },
+        btn('ペンで描く', () => setTool('pen')),
+        btn('描画をクリア', () => { if (!bmp) return; bmp.getContext('2d').clearRect(0, 0, bmp.width, bmp.height); l.rev++; savePaintRev(l.imgId, l.rev, bmp); commit(); }),
+      )),
+    ));
   } else if (l.type === 'shape') {
     const rows = [];
     if (l.kind !== 'line') rows.push(row('塗り', check('', () => l.fillOn, (v) => { l.fillOn = v; }), color(() => l.fill, (v) => { l.fill = v; })));
@@ -1043,6 +1436,7 @@ window.addEventListener('keydown', (e) => {
   if (isEditable(e.target)) return;
   if (e.key === ' ') { spaceDown = true; if (!drag) ovCv.style.cursor = 'grab'; e.preventDefault(); return; }
   if (!modal.hidden) { if (e.key === 'Escape') modal.hidden = true; return; }
+  if (!saveModal.hidden) { if (e.key === 'Escape') saveModal.hidden = true; return; }
   const ctrl = e.ctrlKey || e.metaKey;
   const k = e.key.toLowerCase();
   const l = selected();
@@ -1050,9 +1444,11 @@ window.addEventListener('keydown', (e) => {
   if (ctrl && k === 'y') { e.preventDefault(); redo(); return; }
   if (ctrl && k === 'd') { e.preventDefault(); duplicateSelected(); return; }
   if (ctrl && k === 'o') { e.preventDefault(); $('#fileInput').click(); return; }
-  if (ctrl && k === 's') { e.preventDefault(); openExport(); return; }
+  if (ctrl && k === 's') { e.preventDefault(); if (e.shiftKey) $('#btnSave').click(); else openExport(); return; }
   if (ctrl && k === '0') { e.preventDefault(); zoomFit(); return; }
-  if (e.key === 'Escape') { if (mode) exitMode(); else select(null); return; }
+  if (!ctrl && !e.altKey && TOOL_KEYS[k]) { setTool(TOOL_KEYS[k]); return; }
+  if (!ctrl && (e.key === '[' || e.key === ']')) { const d = tool.size < 10 ? 1 : tool.size < 50 ? 2 : 5; setBrushSize(tool.size + (e.key === ']' ? d : -d)); return; }
+  if (e.key === 'Escape') { if (mode) exitMode(); else if (tool.kind !== 'select') setTool('select'); else select(null); return; }
   if (e.key === 'Enter' && mode) { applyMode(); return; }
   if ((e.key === 'Delete' || e.key === 'Backspace') && l) { e.preventDefault(); deleteSelected(); return; }
   if (e.key.startsWith('Arrow') && l && !l.locked) {
@@ -1085,4 +1481,5 @@ new ResizeObserver(resizeView).observe(stage);
 commit();
 zoomFit();
 window.__appLoaded = true;
+if (location.hash === '#debug') window.__dbg = { state, images, paintRevs, history, renderNow, loadProject, serializeProject };   // 動作確認用
 })();

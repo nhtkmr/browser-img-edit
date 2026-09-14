@@ -73,6 +73,14 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 #dropHint .sub { font-size: 13px; color: var(--muted); margin-top: 6px; }
 #stage.dragover { outline: 3px dashed var(--accent); outline-offset: -6px; }
+#toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 100; max-width: min(90vw, 640px);
+  background: #b0362f; color: #fff; padding: 10px 16px; border-radius: 6px; font-size: 13px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-all; box-shadow: 0 4px 16px rgba(0,0,0,.4); cursor: pointer;
+}
+#loadError .dialog { width: 560px; }
+#loadError ul { padding-left: 20px; line-height: 1.7; }
+#loadError a { color: var(--accent); }
 #cropBar {
   position: absolute; left: 50%; top: 12px; transform: translateX(-50%);
   display: flex; gap: 8px; align-items: center;

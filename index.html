@@ -10,7 +10,7 @@
 <header id="toolbar">
   <div class="group">
     <button type="button" id="btnOpen" class="primary">画像を開く</button>
-    <input type="file" id="fileInput" accept="image/*" multiple hidden>
+    <input type="file" id="fileInput" accept="image/*,.png,.jpg,.jpeg,.jfif,.gif,.webp,.bmp,.svg,.avif,.ico,.tif,.tiff" multiple hidden>
     <span class="sep"></span>
     <button type="button" id="btnAddText">テキスト</button>
     <button type="button" id="btnAddRect">矩形</button>
@@ -111,6 +111,39 @@
   </div>
 </div>
 
+<div id="toast" hidden></div>
+<div id="loadError" class="modal" hidden>
+  <div class="dialog">
+    <h2>アプリを起動できませんでした</h2>
+    <p id="loadErrorMsg"></p>
+    <ul>
+      <li><code>app.js</code> と <code>style.css</code> が <code>index.html</code> と同じフォルダーにあるか確認してください（<code>index.html</code> 単体では動きません）</li>
+      <li>Chrome / Edge / Firefox の最新版で開いてください</li>
+      <li>または Web 版 <a href="https://nhtkmr.github.io/browser-img-edit/">https://nhtkmr.github.io/browser-img-edit/</a> を利用してください</li>
+    </ul>
+  </div>
+</div>
+
 <script src="app.js"></script>
+<script>
+// app.js が読み込めない（ファイル不足）／古いブラウザで実行できない場合に案内を出す（ES5 で記述）
+(function () {
+  if (window.__appLoaded) return;
+  var box = document.getElementById('loadError');
+  var msg = document.getElementById('loadErrorMsg');
+  var link = document.querySelector('link[rel=stylesheet]');
+  var cssOk = false;
+  try { cssOk = !!(link && link.sheet && link.sheet.cssRules.length); } catch (e) { cssOk = true; }
+  msg.textContent = cssOk
+    ? 'app.js を実行できませんでした。ブラウザが古い可能性があります。'
+    : 'app.js / style.css が見つかりません。ファイルが一緒にコピーされていない可能性があります。';
+  if (!cssOk) {
+    box.setAttribute('style', 'position:fixed;left:0;top:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.6);font-family:sans-serif');
+    box.firstElementChild.setAttribute('style', 'background:#fff;color:#222;padding:16px 24px;border-radius:8px;max-width:560px;line-height:1.7');
+  }
+  box.hidden = false;
+  box.removeAttribute('hidden');
+})();
+</script>
 </body>
 </html>

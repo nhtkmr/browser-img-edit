@@ -634,10 +634,31 @@ function updateCanvasInputs() {
 // =====================================================================
 //  画像読み込み
 // =====================================================================
+// 通知（エラーなどを画面に表示）
+let toastTimer = null;
+function toast(msg, ms = 6000) {
+  const t = $('#toast');
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, ms);
+}
+$('#toast').onclick = () => { $('#toast').hidden = true; };
+
+// File.type は OS の拡張子→MIME 設定に依存し、環境によっては空になるため拡張子でも判定する
+const IMAGE_EXT = /\.(png|jpe?g|jfif|pjpeg|gif|webp|bmp|dib|svgz?|avif|ico|cur|tiff?|heic|heif)$/i;
+const isImageFile = (f) => f.type.startsWith('image/') || (!f.type && IMAGE_EXT.test(f.name || ''));
+
 async function loadFiles(files) {
-  const list = [...files].filter((f) => f.type.startsWith('image/'));
-  if (!list.length) return;
+  const all = [...files];
+  if (!all.length) return;
+  const list = all.filter(isImageFile);
+  if (!list.length) {
+    toast(`画像ファイルではないため読み込めません: ${all.map((f) => f.name || '(名前なし)').join(', ')}`);
+    return;
+  }
+  const skipped = all.length - list.length;
   let added = 0;
+  const failed = [];
   for (const f of list) {
     try {
       const img = await loadImage(f);
@@ -649,12 +670,18 @@ async function loadFiles(files) {
       if (first) zoomFit();
     } catch (err) {
       console.error('画像の読み込みに失敗:', f.name, err);
+      failed.push(f.name || '(名前なし)');
     }
   }
   if (added) commit();
+  const msgs = [];
+  if (failed.length) msgs.push(`読み込めませんでした（ブラウザが対応していない形式か、ファイルが壊れています）: ${failed.join(', ')}`);
+  if (skipped) msgs.push(`画像以外の ${skipped} 件をスキップしました`);
+  if (msgs.length) toast(msgs.join('\n'));
 }
 function loadImage(file) {
   return new Promise((resolve, reject) => {
+    if (file.size === 0) { reject(new Error('empty file')); return; }
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
@@ -664,9 +691,20 @@ function loadImage(file) {
 }
 $('#btnOpen').onclick = () => $('#fileInput').click();
 $('#fileInput').addEventListener('change', (e) => { loadFiles(e.target.files); e.target.value = ''; });
-stage.addEventListener('dragover', (e) => { e.preventDefault(); stage.classList.add('dragover'); });
-stage.addEventListener('dragleave', () => stage.classList.remove('dragover'));
-stage.addEventListener('drop', (e) => { e.preventDefault(); stage.classList.remove('dragover'); loadFiles(e.dataTransfer.files); });
+// ドロップはページ全体で受け付ける（ツールバー等に落としてもブラウザが画像を開いてしまわないように）
+const hasFileDrag = (e) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+document.addEventListener('dragover', (e) => {
+  if (dragLayerId || !hasFileDrag(e)) return;
+  e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; stage.classList.add('dragover');
+});
+document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) stage.classList.remove('dragover'); });
+document.addEventListener('drop', (e) => {
+  stage.classList.remove('dragover');
+  if (dragLayerId) return;
+  e.preventDefault();
+  if (e.dataTransfer.files.length) loadFiles(e.dataTransfer.files);
+  else if (e.dataTransfer.types.length) toast('ファイルを受け取れませんでした。エクスプローラー等からファイルをドロップしてください（リモートデスクトップやブラウザ内の画像からのドロップは非対応です）');
+});
 document.addEventListener('paste', (e) => {
   if (isEditable(e.target)) return;
   const items = e.clipboardData ? [...e.clipboardData.items] : [];
@@ -1046,4 +1084,5 @@ function refresh() {
 new ResizeObserver(resizeView).observe(stage);
 commit();
 zoomFit();
+window.__appLoaded = true;
 })();

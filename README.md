@@ -5,6 +5,8 @@
 
 **Web 版**: https://nhtkmr.github.io/browser-img-edit/ （ブラウザで開くだけで使えます）
 
+たくさんの画像をまとめてリサイズ・変換したいときは、姉妹ツールの [画像一括変換](https://github.com/nhtkmr/browser-img-batch)（https://nhtkmr.github.io/browser-img-batch/ ）をどうぞ。
+
 ## 使い方
 
 1. `index.html` をブラウザで開く

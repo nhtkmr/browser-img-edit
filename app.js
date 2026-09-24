@@ -35,7 +35,7 @@ const images = new Map();   // imgId -> HTMLImageElement | HTMLCanvasElement（�
 const imageBlobs = new Map(); // imgId -> Blob（元ファイル。プロジェクト保存で再エンコードせずに使う）
 let nextId = 1;
 const uid = () => 'L' + (nextId++);
-let mode = null;            // null | { kind:'layerCrop'|'canvasCrop', layerId?, rect? }
+let mode = null;            // null | { kind:'layerCrop'|'canvasCrop'|'erase', layerId?, rect? }
 let drag = null;            // ポインタ操作中の状態
 let spaceDown = false;
 
@@ -432,19 +432,26 @@ function drawOverlay() {
     if (!r) return;
     const corners = [[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h]];
     let pts;
-    if (mode.kind === 'layerCrop') {
+    if (mode.kind !== 'canvasCrop') {
       const l = getLayer(mode.layerId); if (!l) return;
       pts = corners.map(([x, y]) => toScreen(localToCanvas(l, x - l.w / 2, y - l.h / 2)));
     } else {
       pts = corners.map(([x, y]) => toScreen({ x, y }));
     }
-    // 選択範囲の外側を暗く
     octx.save();
-    octx.fillStyle = 'rgba(0,0,0,.45)';
     octx.beginPath();
-    octx.rect(0, 0, ovCv.width / dpr, ovCv.height / dpr);
-    octx.moveTo(pts[0].x, pts[0].y); for (let i = 3; i >= 1; i--) octx.lineTo(pts[i].x, pts[i].y); octx.closePath();
-    octx.fill('evenodd');
+    if (mode.kind === 'erase') {
+      // 消す範囲を赤く
+      octx.fillStyle = 'rgba(239,68,68,.35)';
+      pts.forEach((p, i) => (i ? octx.lineTo(p.x, p.y) : octx.moveTo(p.x, p.y))); octx.closePath();
+      octx.fill();
+    } else {
+      // 選択範囲の外側を暗く
+      octx.fillStyle = 'rgba(0,0,0,.45)';
+      octx.rect(0, 0, ovCv.width / dpr, ovCv.height / dpr);
+      octx.moveTo(pts[0].x, pts[0].y); for (let i = 3; i >= 1; i--) octx.lineTo(pts[i].x, pts[i].y); octx.closePath();
+      octx.fill('evenodd');
+    }
     octx.restore();
     strokePoly(pts, '#fff', '#000');
     return;
@@ -547,7 +554,12 @@ function toBitmap(l, cp) {
 }
 function beginStroke(e) {
   let l = selected();
-  if (!l || l.type !== 'paint' || l.locked || !l.visible) {
+  const usable = l && !l.locked && l.visible;
+  if (tool.kind === 'eraser') {
+    // 消しゴム: 描画レイヤーか画像レイヤー（描画レイヤーへ変換）だけを消す
+    if (!usable || (l.type !== 'paint' && l.type !== 'image')) { toast('消すレイヤー（画像・描画）を選択してください', 2500); return false; }
+    if (l.type === 'image') rasterizeImageLayer(l);
+  } else if (!usable || l.type !== 'paint') {
     l = makePaintLayer();
     addLayer(l, { center: false });
     updateLayerList();
@@ -558,6 +570,7 @@ function beginStroke(e) {
   stroke = { layerId: l.id, cv, ctx: cv.getContext('2d'), preview, pctx: preview.getContext('2d'),
     last: null, eraser: tool.kind === 'eraser', opacity: tool.opacity };
   strokeTo(e);
+  return true;
 }
 function strokeTo(e) {
   const l = getLayer(stroke.layerId); if (!l) return;
@@ -645,7 +658,7 @@ ovCv.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
 
   if (mode) {
-    const start = mode.kind === 'layerCrop' ? layerLocalTL(getLayer(mode.layerId), cp) : clampToCanvas(cp);
+    const start = mode.kind !== 'canvasCrop' ? layerLocalTL(getLayer(mode.layerId), cp) : clampToCanvas(cp);
     drag = { type: 'rect', start };
     mode.rect = null;
     render();
@@ -653,8 +666,7 @@ ovCv.addEventListener('pointerdown', (e) => {
   }
   if (tool.kind !== 'select') {
     if (e.altKey) { pickColor(cp); return; }
-    drag = { type: 'paint' };
-    beginStroke(e);
+    if (beginStroke(e)) drag = { type: 'paint' };
     return;
   }
 
@@ -689,7 +701,7 @@ ovCv.addEventListener('pointermove', (e) => {
       view.panX = drag.panX0 + sp.x - drag.sp.x; view.panY = drag.panY0 + sp.y - drag.sp.y;
       render(); return;
     case 'rect': {
-      const p = mode.kind === 'layerCrop' ? layerLocalTL(getLayer(mode.layerId), cp) : clampToCanvas(cp);
+      const p = mode.kind !== 'canvasCrop' ? layerLocalTL(getLayer(mode.layerId), cp) : clampToCanvas(cp);
       const s = drag.start;
       mode.rect = { x: Math.min(s.x, p.x), y: Math.min(s.y, p.y), w: Math.abs(p.x - s.x), h: Math.abs(p.y - s.y) };
       updateCropMsg(); render(); return;
@@ -807,6 +819,8 @@ const clampToCanvas = (p) => ({ x: clamp(Math.round(p.x), 0, state.canvas.w), y:
 function enterMode(kind) {
   const l = selected();
   if (kind === 'layerCrop' && (!l || l.type !== 'image')) return;
+  if (kind === 'erase' && (!l || (l.type !== 'image' && l.type !== 'paint') || l.locked)) return;
+  if (tool.kind !== 'select') setTool('select');
   mode = { kind, layerId: l ? l.id : null, rect: null };
   $('#cropBar').hidden = false;
   $('#btnCanvasCrop').classList.toggle('active', kind === 'canvasCrop');
@@ -820,7 +834,8 @@ function exitMode(rerender = true) {
 }
 function updateCropMsg() {
   if (!mode) return;
-  const base = mode.kind === 'layerCrop' ? 'トリミング: レイヤー上で残す範囲をドラッグ' : 'キャンバス切り抜き: 残す範囲をドラッグ';
+  const base = mode.kind === 'layerCrop' ? 'トリミング: レイヤー上で残す範囲をドラッグ'
+    : mode.kind === 'erase' ? '範囲を消去: 消す範囲をドラッグ（Enter / Delete で消去）' : 'キャンバス切り抜き: 残す範囲をドラッグ';
   const r = mode.rect;
   $('#cropMsg').textContent = r && r.w >= 1 && r.h >= 1 ? `${base}（${Math.round(r.w)} × ${Math.round(r.h)} px）` : base;
 }
@@ -836,6 +851,15 @@ function applyMode() {
     l.crop = { sx: c.sx + rx * kx, sy: c.sy + ry * ky, sw: r.w * kx, sh: r.h * ky };
     l.w = Math.round(r.w); l.h = Math.round(r.h);
     l.x = Math.round(nc.x - r.w / 2); l.y = Math.round(nc.y - r.h / 2);
+  } else if (mode.kind === 'erase') {
+    const l = getLayer(mode.layerId); if (!l) { exitMode(); return; }
+    if (l.type === 'image') rasterizeImageLayer(l);
+    const bmp = images.get(l.imgId), kx = bmp.width / l.w, ky = bmp.height / l.h;
+    const rx = l.flipX ? l.w - r.x - r.w : r.x;
+    const ry = l.flipY ? l.h - r.y - r.h : r.y;
+    bmp.getContext('2d').clearRect(rx * kx, ry * ky, r.w * kx, r.h * ky);
+    l.rev++;
+    savePaintRev(l.imgId, l.rev, bmp);
   } else {
     const rx = Math.round(r.x), ry = Math.round(r.y);
     state.canvas.w = Math.max(1, Math.round(r.w)); state.canvas.h = Math.max(1, Math.round(r.h));
@@ -878,6 +902,16 @@ function rasterizeLayers(layers, name) {
   nl.imgId = nl.id; nl.rev = 0; images.set(nl.imgId, cv); savePaintRev(nl.imgId, 0, cv);
   nl.x = x; nl.y = y; nl.w = w; nl.h = h;
   return nl;
+}
+// 画像レイヤーを見た目を変えずに描画レイヤーへ変換する（消しゴム・範囲消去の前に呼ぶ。commit はしない）
+function rasterizeImageLayer(l) {
+  const img = images.get(l.imgId), c = l.crop;
+  const cv = document.createElement('canvas');
+  cv.width = clamp(Math.round(c.sw), 1, 16384); cv.height = clamp(Math.round(c.sh), 1, 16384);
+  if (img) cv.getContext('2d').drawImage(img, c.sx, c.sy, c.sw, c.sh, 0, 0, cv.width, cv.height);
+  l.type = 'paint'; l.imgId = uid(); l.rev = 0; delete l.crop;
+  images.set(l.imgId, cv); savePaintRev(l.imgId, 0, cv);
+  toast('画像レイヤーを描画レイヤーに変換しました（元に戻す: Ctrl+Z）', 3000);
 }
 function mergeDown() {
   const l = selected(); if (!l) return;
@@ -1438,6 +1472,7 @@ function buildProps(l) {
     propsRoot.append(sec('画像',
       row(null, el('div', { class: 'btns' },
         btn('トリミング', () => enterMode('layerCrop')),
+        btn('範囲を消去', () => enterMode('erase')),
         btn('元のサイズに戻す', () => {
           if (!img) return;
           const cx = l.x + l.w / 2, cy = l.y + l.h / 2;
@@ -1474,6 +1509,7 @@ function buildProps(l) {
       row(null, el('span', { class: 'hint' }, bmp ? `ビットマップ ${bmp.width} × ${bmp.height} px` : '')),
       row(null, el('div', { class: 'btns' },
         btn('ペンで描く', () => setTool('pen')),
+        btn('範囲を消去', () => enterMode('erase')),
         btn('描画をクリア', () => { if (!bmp) return; bmp.getContext('2d').clearRect(0, 0, bmp.width, bmp.height); l.rev++; savePaintRev(l.imgId, l.rev, bmp); commit(); }),
       )),
     ));
@@ -1589,6 +1625,7 @@ window.addEventListener('keydown', (e) => {
   if (!ctrl && (e.key === '[' || e.key === ']')) { const d = tool.size < 10 ? 1 : tool.size < 50 ? 2 : 5; setBrushSize(tool.size + (e.key === ']' ? d : -d)); return; }
   if (e.key === 'Escape') { if (mode) exitMode(); else if (tool.kind !== 'select') setTool('select'); else select(null); return; }
   if (e.key === 'Enter' && mode) { applyMode(); return; }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && mode && mode.kind === 'erase') { e.preventDefault(); applyMode(); return; }
   if ((e.key === 'Delete' || e.key === 'Backspace') && l) { e.preventDefault(); deleteSelected(); return; }
   if (e.key.startsWith('Arrow') && l && !l.locked) {
     e.preventDefault();

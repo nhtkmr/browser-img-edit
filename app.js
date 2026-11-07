@@ -818,7 +818,7 @@ const clampToCanvas = (p) => ({ x: clamp(Math.round(p.x), 0, state.canvas.w), y:
 // =====================================================================
 function enterMode(kind) {
   const l = selected();
-  if (kind === 'layerCrop' && (!l || l.type !== 'image')) return;
+  if (kind === 'layerCrop' && (!l || (l.type !== 'image' && l.type !== 'paint') || (l.type === 'paint' && l.locked))) return;
   if (kind === 'erase' && (!l || (l.type !== 'image' && l.type !== 'paint') || l.locked)) return;
   if (tool.kind !== 'select') setTool('select');
   mode = { kind, layerId: l ? l.id : null, rect: null };
@@ -844,11 +844,22 @@ function applyMode() {
   if (!r || r.w < 1 || r.h < 1) { exitMode(); return; }
   if (mode.kind === 'layerCrop') {
     const l = getLayer(mode.layerId); if (!l) { exitMode(); return; }
-    const c = l.crop, kx = c.sw / l.w, ky = c.sh / l.h;
     const rx = l.flipX ? l.w - r.x - r.w : r.x;
     const ry = l.flipY ? l.h - r.y - r.h : r.y;
     const nc = localToCanvas(l, r.x + r.w / 2 - l.w / 2, r.y + r.h / 2 - l.h / 2);
-    l.crop = { sx: c.sx + rx * kx, sy: c.sy + ry * ky, sw: r.w * kx, sh: r.h * ky };
+    if (l.type === 'paint') {
+      // 描画レイヤーは crop を持たないので、範囲を切り出した新しいビットマップに差し替える（旧ビットマップは履歴に残り Undo で戻る）
+      const bmp = images.get(l.imgId); if (!bmp) { exitMode(); return; }
+      const kx = bmp.width / l.w, ky = bmp.height / l.h;
+      const cv = document.createElement('canvas');
+      cv.width = clamp(Math.round(r.w * kx), 1, 16384); cv.height = clamp(Math.round(r.h * ky), 1, 16384);
+      cv.getContext('2d').drawImage(bmp, rx * kx, ry * ky, r.w * kx, r.h * ky, 0, 0, cv.width, cv.height);
+      l.imgId = uid(); l.rev = 0;
+      images.set(l.imgId, cv); savePaintRev(l.imgId, 0, cv);
+    } else {
+      const c = l.crop, kx = c.sw / l.w, ky = c.sh / l.h;
+      l.crop = { sx: c.sx + rx * kx, sy: c.sy + ry * ky, sw: r.w * kx, sh: r.h * ky };
+    }
     l.w = Math.round(r.w); l.h = Math.round(r.h);
     l.x = Math.round(nc.x - r.w / 2); l.y = Math.round(nc.y - r.h / 2);
   } else if (mode.kind === 'erase') {
@@ -1509,6 +1520,7 @@ function buildProps(l) {
       row(null, el('span', { class: 'hint' }, bmp ? `ビットマップ ${bmp.width} × ${bmp.height} px` : '')),
       row(null, el('div', { class: 'btns' },
         btn('ペンで描く', () => setTool('pen')),
+        btn('トリミング', () => enterMode('layerCrop')),
         btn('範囲を消去', () => enterMode('erase')),
         btn('描画をクリア', () => { if (!bmp) return; bmp.getContext('2d').clearRect(0, 0, bmp.width, bmp.height); l.rev++; savePaintRev(l.imgId, l.rev, bmp); commit(); }),
       )),
